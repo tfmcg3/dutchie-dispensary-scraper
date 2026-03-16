@@ -4,6 +4,7 @@
   "description": "Complete product menu data extracted from a Dutchie-powered dispensary. Each item represents one product variant (e.g. 1/8oz, 1g) with full pricing, potency, and availability details.",
   "properties": {
     "results": {
+      "type": "object",
       "title": "Product Results",
       "description": "All scraped product records stored in the default dataset. Each record contains product name, brand, category, price, THC/CBD levels, size, in-stock status, and metadata.",
       "template": "{{links.apiDefaultDatasetUrl}}/items"
