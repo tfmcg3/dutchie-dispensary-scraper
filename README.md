@@ -122,6 +122,9 @@ Most single-store runs cost under $2. Billing is based on output results written
 | Single large store | ~1,000 SKUs | ~$1.50 |
 | 5 stores (bulk) | ~5,000 SKUs | ~$7.50 |
 | 10 stores (bulk) | ~10,000 SKUs | ~$15.00 |
+| High-frequency (1 store, 1000 SKUs, every 15 min) | ~96,000 SKUs/day | ~$144/day |
+
+**Note on high-frequency use:** This Actor is optimized for batch runs (daily, hourly). For high-frequency polling (every 5 minutes), the per-SKU cost can become significant. For these use cases, a dedicated Actor with a different pricing model may be more cost-effective.
 
 ---
 
@@ -149,10 +152,11 @@ This Actor has been tested against:
 
 ## ⚠️ Known Limitations
 
-- Scrapes public rec menus by default
-- Some stores may require residential proxies
-- Medical, age-gated, or region-gated menus may return partial or no data
-- This Actor relies on Dutchie’s public-facing GraphQL menu infrastructure rather than browser rendering, which makes it faster and cheaper but also means upstream API changes may require maintenance updates.
+- **Menu Type:** Scrapes public recreational (rec) menus by default. Medical-only or dual-license menus may return different or partial data.
+- **Proxy Use:** Some stores may require residential proxies to avoid blocks.
+- **Gated Content:** Age-gated or region-gated menus may return partial or no data.
+- **Upstream Changes:** This Actor relies on Dutchie’s public-facing GraphQL menu infrastructure. Upstream API changes may require maintenance updates to the Actor.
+- **Retry Behavior:** On failed requests, the Actor retries up to 3 times with exponential backoff. If a store returns partial data, the Actor logs a warning but completes the run with the data it has.
 
 ---
 
@@ -176,6 +180,11 @@ This Actor has been tested against:
 ---
 
 ## 📄 Compliance Notice
+
+This Actor is provided for lawful data extraction purposes only. It uses Dutchie's public-facing GraphQL API, which serves their own frontend, and respects rate limits to avoid disrupting service. Users are solely responsible for ensuring their use of this Actor complies with Dutchie's [Terms of Service](https://dutchie.com/terms-of-service), all applicable local, state, and federal laws, and the terms of service of any dispensary whose data is extracted.
+
+---
+
 
 This Actor is provided for lawful data extraction purposes only. Users are solely responsible for ensuring their use of this Actor complies with Dutchie's [Terms of Service](https://dutchie.com/terms-of-service), all applicable local, state, and federal laws, and the terms of service of any dispensary whose data is extracted.
 
