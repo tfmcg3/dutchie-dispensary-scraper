@@ -1,0 +1,51 @@
+{
+    "title": "Dutchie Dispensary Menu Scraper",
+    "description": "<p>Extract complete product menus from any <a href='https://dutchie.com' target='_blank'>Dutchie.com</a>-powered dispensary. Paste one or more dispensary URLs below and click <strong>Run</strong>.</p><p><strong>Pricing:</strong> $1.50 per 1,000 product variants (SKUs) extracted.</p>",
+    "type": "object",
+    "schemaVersion": 1,
+    "properties": {
+        "dispensaryUrls": {
+            "title": "Dispensary URLs",
+            "type": "array",
+            "description": "One or more Dutchie dispensary URLs to scrape. Example: https://dutchie.com/dispensary/your-store-name",
+            "editor": "stringList",
+            "prefill": [
+                "https://dutchie.com/dispensary/pinnacle-cannabis-quincy"
+            ],
+            "sectionCaption": "Target Dispensaries",
+            "sectionDescription": "Paste the full Dutchie URL for each dispensary you want to scrape."
+        },
+        "maxItems": {
+            "title": "Max Products per Store",
+            "type": "integer",
+            "description": "Limit the number of products extracted per dispensary. Set to 0 for unlimited (full menu). Use a small number (e.g. 10) to preview results before a full run.",
+            "minimum": 0,
+            "default": 0,
+            "prefill": 10,
+            "editor": "number",
+            "sectionCaption": "Output Controls",
+            "sectionDescription": "Control how much data is extracted."
+        },
+        "useProxy": {
+            "title": "Use Apify Proxy",
+            "type": "boolean",
+            "description": "Enable Apify proxy for IP rotation. Recommended if you encounter 403 errors or are scraping many stores in bulk.",
+            "default": false,
+            "sectionCaption": "Advanced Settings",
+            "sectionDescription": "Proxy and network configuration. Most users can leave these at their defaults."
+        },
+        "proxyGroup": {
+            "title": "Proxy Group",
+            "type": "string",
+            "description": "Which Apify proxy group to use when proxy is enabled.",
+            "editor": "select",
+            "default": "RESIDENTIAL",
+            "enum": ["RESIDENTIAL", "DATACENTER"],
+            "enumTitles": [
+                "Residential (Best Reliability)",
+                "Datacenter (Fastest)"
+            ]
+        }
+    },
+    "required": ["dispensaryUrls"]
+}

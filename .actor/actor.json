@@ -1,0 +1,87 @@
+{
+    "actorSpecification": 1,
+    "name": "dutchie-dispensary-scraper",
+    "title": "Dutchie Dispensary Menu Scraper",
+    "description": "Extract complete product menus from any Dutchie-powered dispensary in under 60 seconds. Returns clean, structured data: product names, brands, THC/CBD levels, pricing, variant sizes, and stock status. No browser required — API-based, near-zero compute cost.",
+    "version": "1.0.0",
+    "buildTag": "latest",
+    "input": "./input_schema.json",
+    "dockerfile": "../Dockerfile",
+    "storages": {
+        "dataset": {
+            "actorSpecification": 1,
+            "title": "Dispensary Products",
+            "views": {
+                "overview": {
+                    "title": "Product Overview",
+                    "transformation": {
+                        "fields": [
+                            "dispensary_name",
+                            "category",
+                            "product_name",
+                            "brand",
+                            "strain_type",
+                            "thc_level",
+                            "cbd_level",
+                            "variant_size",
+                            "display_price",
+                            "numeric_price",
+                            "special_offer_name",
+                            "in_stock",
+                            "scraped_at"
+                        ]
+                    },
+                    "display": {
+                        "component": "table",
+                        "properties": {
+                            "dispensary_name":    { "label": "Store",        "format": "text"   },
+                            "category":           { "label": "Category",     "format": "text"   },
+                            "product_name":       { "label": "Product",      "format": "text"   },
+                            "brand":              { "label": "Brand",        "format": "text"   },
+                            "strain_type":        { "label": "Strain",       "format": "text"   },
+                            "thc_level":          { "label": "THC",          "format": "text"   },
+                            "cbd_level":          { "label": "CBD",          "format": "text"   },
+                            "variant_size":       { "label": "Size",         "format": "text"   },
+                            "display_price":      { "label": "Price",        "format": "text"   },
+                            "numeric_price":      { "label": "Price ($)",    "format": "number" },
+                            "special_offer_name": { "label": "Special",      "format": "text"   },
+                            "in_stock":           { "label": "In Stock",     "format": "text"   }
+                        }
+                    }
+                },
+                "in_stock_only": {
+                    "title": "In-Stock Products",
+                    "transformation": {
+                        "fields": [
+                            "dispensary_name",
+                            "category",
+                            "product_name",
+                            "brand",
+                            "thc_level",
+                            "variant_size",
+                            "display_price",
+                            "numeric_price"
+                        ],
+                        "filter": {
+                            "field": "in_stock",
+                            "eq": true
+                        }
+                    },
+                    "display": {
+                        "component": "table",
+                        "properties": {
+                            "dispensary_name": { "label": "Store",     "format": "text"   },
+                            "category":        { "label": "Category",  "format": "text"   },
+                            "product_name":    { "label": "Product",   "format": "text"   },
+                            "brand":           { "label": "Brand",     "format": "text"   },
+                            "thc_level":       { "label": "THC",       "format": "text"   },
+                            "variant_size":    { "label": "Size",      "format": "text"   },
+                            "display_price":   { "label": "Price",     "format": "text"   },
+                            "numeric_price":   { "label": "Price ($)", "format": "number" }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

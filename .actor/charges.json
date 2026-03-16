@@ -1,0 +1,15 @@
+{
+    "chargeEvents": {
+        "product-scraped": {
+            "title": "Product variant (SKU) scraped",
+            "pricingInfo": [
+                {
+                    "title": "Pay per result",
+                    "description": "Charged once per unique product variant (SKU) extracted. One product with 3 size options = 3 billable results.",
+                    "pricingType": "price_per_1000_results",
+                    "price": 1.50
+                }
+            ]
+        }
+    }
+}
