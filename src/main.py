@@ -134,6 +134,16 @@ def extract_slug(url: str) -> str:
 
     url = url.strip().rstrip("/")
     parsed = urlparse(url)
+
+    # Reject non-Dutchie domains (e.g. leafly.com, weedmaps.com)
+    if parsed.scheme and parsed.netloc:
+        host = parsed.netloc.lower().lstrip("www.")
+        if not (host == "dutchie.com" or host.endswith(".dutchie.com")):
+            raise ValueError(
+                f"Not a Dutchie URL: {url!r}. "
+                f"Expected format: https://dutchie.com/dispensary/your-store-name"
+            )
+
     path = parsed.path.strip("/")
     segments = [s for s in path.split("/") if s]
 
@@ -141,8 +151,29 @@ def extract_slug(url: str) -> str:
         prefix = segments[0].lower()
         if prefix in ("dispensary", "embedded-menu"):
             slug = segments[1]
-            if re.match(r"^[a-zA-Z0-9][-a-zA-Z0-9]*$", slug):
+            # Reject if slug is itself a reserved path segment
+            if slug and slug.lower() not in ("dispensary", "embedded-menu", "menu") \
+                    and re.match(r"^[a-zA-Z0-9][-a-zA-Z0-9]*$", slug):
                 return slug
+            else:
+                raise ValueError(
+                    f"Empty or invalid slug in URL: {url!r}. "
+                    f"Expected format: https://dutchie.com/dispensary/your-store-name"
+                )
+
+    # Reject bare strings (no scheme, no path structure)
+    if not parsed.scheme:
+        raise ValueError(
+            f"Not a valid URL: {url!r}. "
+            f"Expected format: https://dutchie.com/dispensary/your-store-name"
+        )
+
+    # Reject single-segment paths that are just 'dispensary' or 'embedded-menu'
+    if len(segments) == 1 and segments[0].lower() in ("dispensary", "embedded-menu"):
+        raise ValueError(
+            f"Missing dispensary slug in URL: {url!r}. "
+            f"Expected format: https://dutchie.com/dispensary/your-store-name"
+        )
 
     if segments:
         candidate = segments[-1] if segments[-1] != "menu" else (
@@ -581,10 +612,11 @@ def _normalize_category(raw_type: str | None) -> str:
     if not raw_type:
         return "Other"
     mapping = {
+        # ALL-CAPS internal Dutchie types
         "FLOWER":       "Flower",
         "VAPORIZERS":   "Vape",
         "EDIBLES":      "Edible",
-        "PREROLLS":     "Pre-Roll",
+        "PREROLLS":     "Pre-Rolls",
         "CONCENTRATES": "Concentrate",
         "TINCTURES":    "Tincture",
         "TOPICALS":     "Topical",
@@ -593,8 +625,17 @@ def _normalize_category(raw_type: str | None) -> str:
         "SEEDS":        "Seeds",
         "CLONES":       "Clone",
         "CBD":          "CBD",
+        # Mixed-case values returned by Dutchie's API directly
+        "PRE-ROLLS":    "Pre-Rolls",
+        "PRE-ROLL":     "Pre-Rolls",
+        "VAPE":         "Vape",
+        "CONCENTRATE":  "Concentrate",
+        "TINCTURE":     "Tincture",
+        "TOPICAL":      "Topical",
+        "ACCESSORY":    "Accessory",
+        "EDIBLE":       "Edible",
     }
-    return mapping.get(raw_type.upper(), raw_type.title())
+    return mapping.get(raw_type.upper(), raw_type)
 
 
 def normalize_product(
