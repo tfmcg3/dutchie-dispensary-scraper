@@ -1,7 +1,7 @@
 # Dutchie Dispensary Menu Scraper
 
 [![Apify Actor](https://img.shields.io/badge/Apify-Actor-green)](https://apify.com/)
-[![Version](https://img.shields.io/badge/version-1.0.1-blue)](https://github.com/tfmcg3/dutchie-dispensary-scraper)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://github.com/tfmcg3/dutchie-dispensary-scraper)
 [![Python](https://img.shields.io/badge/python-3.11-yellow)](https://python.org/)
 
 Extract structured product menus from public Dutchie-powered dispensary pages in about 30–60 seconds per store, with low compute cost and per-variant SKU output. Output is normalized for direct use in spreadsheets, BI dashboards, diff monitoring, and price-change alerts.
@@ -96,6 +96,7 @@ All schema fields are included whenever available; unavailable values are return
   "strain_type":       null,
   "thc_level":         "2.5mg",
   "cbd_level":         "2.5mg",
+  "potency_unit":      "Milligrams",
   "variant_size":      "20 Pack",
   "display_price":     "$25.00",
   "numeric_price":     25.00,

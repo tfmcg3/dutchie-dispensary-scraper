@@ -532,56 +532,60 @@ def _safe_float(val) -> float | None:
         return None
 
 
-def _extract_potency(raw: dict, field: str) -> str | None:
+def _extract_potency(raw: dict, field: str) -> tuple[str | None, str | None]:
     """
-    Extract a potency string (e.g. '22.5%', '10mg') from nested Dutchie fields.
-    Dutchie stores potency in several possible shapes:
-      - {range: [33.3], unit: 'PERCENTAGE'}         <- most common (single-element list)
-      - {range: [18.0, 24.0], unit: 'PERCENTAGE'}   <- range
-      - {range: [100], unit: 'MILLIGRAMS'}           <- edibles
-      - {formatted: '22.5%'}                        <- pre-formatted
-      - {value: 22.5, unit: 'PERCENTAGE'}            <- legacy
+    Extract a potency string and its unit type from nested Dutchie fields.
+    Returns: (formatted_potency_string, unit_type)
     """
     if not raw or not isinstance(raw, dict):
-        return None
+        return None, None
 
-    # Determine unit suffix
     unit    = _safe_str(raw.get("unit", "")) or ""
     u_upper = unit.upper()
     if "PERCENT" in u_upper:
         suffix = "%"
+        unit_type = "Percentage"
     elif "MILLIGRAM" in u_upper or u_upper == "MG":
         suffix = "mg"
+        unit_type = "Milligrams"
     else:
         suffix = ""
+        unit_type = None
 
-    # Direct formatted string
+    potency_str = None
+
     if "formatted" in raw:
-        return _safe_str(raw["formatted"])
-
-    # Range list (single value or min-max)
-    rng = raw.get("range")
-    if isinstance(rng, list) and len(rng) >= 1:
-        if len(rng) == 1:
-            v = _safe_float(rng[0])
-            if v is not None:
-                return f"{v:.1f}{suffix}"
+        potency_str = _safe_str(raw["formatted"])
+    else:
+        rng = raw.get("range")
+        if isinstance(rng, list) and len(rng) >= 1:
+            if len(rng) == 1:
+                v = _safe_float(rng[0])
+                if v is not None:
+                    potency_str = f"{v:.1f}{suffix}"
+            else:
+                lo_f = _safe_float(rng[0])
+                hi_f = _safe_float(rng[-1])
+                if lo_f is not None and hi_f is not None:
+                    if abs(lo_f - hi_f) < 0.01:
+                        potency_str = f"{lo_f:.1f}{suffix}"
+                    else:
+                        potency_str = f"{lo_f:.1f}\u2013{hi_f:.1f}{suffix}"
         else:
-            lo_f = _safe_float(rng[0])
-            hi_f = _safe_float(rng[-1])
-            if lo_f is not None and hi_f is not None:
-                if abs(lo_f - hi_f) < 0.01:
-                    return f"{lo_f:.1f}{suffix}"
-                return f"{lo_f:.1f}\u2013{hi_f:.1f}{suffix}"
+            val = raw.get("value")
+            if val is not None:
+                v_f = _safe_float(val)
+                if v_f is not None:
+                    potency_str = f"{v_f:.1f}{suffix}"
 
-    # Single value field
-    val = raw.get("value")
-    if val is not None:
-        v_f = _safe_float(val)
-        if v_f is not None:
-            return f"{v_f:.1f}{suffix}"
+    # Infer unit from formatted string if missing
+    if potency_str and not unit_type:
+        if "%" in potency_str:
+            unit_type = "Percentage"
+        elif "mg" in potency_str.lower():
+            unit_type = "Milligrams"
 
-    return None
+    return potency_str, unit_type
 
 
 def _extract_price_and_size(option: dict) -> tuple[float | None, str | None]:
@@ -607,6 +611,35 @@ def _extract_price_and_size(option: dict) -> tuple[float | None, str | None]:
     return price, size
 
 
+def _normalize_strain(raw_strain: str | None) -> str | None:
+    """Normalize strain types to standard Golden Schema values."""
+    if not raw_strain:
+        return None
+    s = raw_strain.upper().strip()
+    if s in ("N/A", "THC", "CBD", "NONE", "UNKNOWN"):
+        return None
+    
+    mapping = {
+        "SATIVA": "Sativa",
+        "INDICA": "Indica",
+        "HYBRID": "Hybrid",
+        "SATIVA_HYBRID": "Sativa-Hybrid",
+        "SATIVA-HYBRID": "Sativa-Hybrid",
+        "INDICA_HYBRID": "Indica-Hybrid",
+        "INDICA-HYBRID": "Indica-Hybrid",
+    }
+    return mapping.get(s, raw_strain.title())
+
+
+def _clean_product_name(name: str) -> str:
+    """Remove embedded potency data from product names (e.g. *34.61% TAC*)."""
+    if not name:
+        return "Unknown Product"
+    # Remove anything between asterisks at the end of the string
+    cleaned = re.sub(r'\s*\*.*?\*\s*$', '', name).strip()
+    return cleaned if cleaned else name
+
+
 def _normalize_category(raw_type: str | None) -> str:
     """Map Dutchie's internal menuType to a clean category name."""
     if not raw_type:
@@ -616,7 +649,7 @@ def _normalize_category(raw_type: str | None) -> str:
         "FLOWER":       "Flower",
         "VAPORIZERS":   "Vape",
         "EDIBLES":      "Edible",
-        "PREROLLS":     "Pre-Rolls",
+        "PREROLLS":     "Pre-Roll",
         "CONCENTRATES": "Concentrate",
         "TINCTURES":    "Tincture",
         "TOPICALS":     "Topical",
@@ -626,8 +659,8 @@ def _normalize_category(raw_type: str | None) -> str:
         "CLONES":       "Clone",
         "CBD":          "CBD",
         # Mixed-case values returned by Dutchie's API directly
-        "PRE-ROLLS":    "Pre-Rolls",
-        "PRE-ROLL":     "Pre-Rolls",
+        "PRE-ROLLS":    "Pre-Roll",
+        "PRE-ROLL":     "Pre-Roll",
         "VAPE":         "Vape",
         "CONCENTRATE":  "Concentrate",
         "TINCTURE":     "Tincture",
@@ -657,12 +690,13 @@ def normalize_product(
     """
     # ── Core fields — handle both camelCase and PascalCase ────────────────────
     product_id   = _safe_str(raw.get("_id") or raw.get("id", ""))
-    product_name = _safe_str(raw.get("Name") or raw.get("name", "")) or "Unknown Product"
+    raw_name = _safe_str(raw.get("Name") or raw.get("name", "")) or "Unknown Product"
+    product_name = _clean_product_name(raw_name)
     brand        = _safe_str(raw.get("brandName") or raw.get("brand", ""))
     raw_category = _safe_str(raw.get("type") or raw.get("menuType", ""))
     category     = _normalize_category(raw_category)
     subcategory  = _safe_str(raw.get("subcategory", ""))
-    strain_type  = _safe_str(raw.get("strainType", ""))
+    strain_type  = _normalize_strain(raw.get("strainType"))
     description  = _safe_str(raw.get("description", ""))
     in_stock     = bool(raw.get("Status") == "Active" or raw.get("inStock", True))
 
@@ -694,8 +728,8 @@ def normalize_product(
         or raw.get("potencyCbd")
         or {}
     )
-    thc_level = _extract_potency(thc_raw, "thc")
-    cbd_level = _extract_potency(cbd_raw, "cbd")
+    thc_level, thc_unit = _extract_potency(thc_raw, "thc")
+    cbd_level, cbd_unit = _extract_potency(cbd_raw, "cbd")
 
     # ── Special offers ────────────────────────────────────────────────────────
     specials     = raw.get("enterpriseProductSpecials") or raw.get("specials") or []
@@ -716,9 +750,15 @@ def normalize_product(
     if options and isinstance(options, list) and len(options) > 0:
         for i, opt in enumerate(options):
             # opt is a string like "1/8oz", "3.5g", "5 Pack", etc.
-            size = _safe_str(opt) if not isinstance(opt, dict) else (
-                _safe_str(opt.get("name") or opt.get("weight", ""))
-            )
+            if not isinstance(opt, dict):
+                size = _safe_str(opt)
+            else:
+                w = _safe_float(opt.get("weight"))
+                u = _safe_str(opt.get("unit", ""))
+                if w is not None and u:
+                    size = f"{w:g}{u}"  # Use :g to drop trailing zeros, but keeps 0.1
+                else:
+                    size = _safe_str(opt.get("name", ""))
 
             # Get the matching price from the parallel prices list
             if isinstance(opt, dict):
@@ -742,6 +782,7 @@ def normalize_product(
                 "strain_type":        strain_type,
                 "thc_level":          thc_level,
                 "cbd_level":          cbd_level,
+                "potency_unit":       thc_unit or cbd_unit,
                 "variant_size":       size,
                 "display_price":      display_price,
                 "numeric_price":      price,
@@ -770,6 +811,7 @@ def normalize_product(
             "strain_type":        strain_type,
             "thc_level":          thc_level,
             "cbd_level":          cbd_level,
+            "potency_unit":       thc_unit or cbd_unit,
             "variant_size":       None,
             "display_price":      f"${price:.2f}" if price is not None else None,
             "numeric_price":      price,

@@ -24,6 +24,7 @@
                             "strain_type",
                             "thc_level",
                             "cbd_level",
+                            "potency_unit",
                             "variant_size",
                             "display_price",
                             "numeric_price",
@@ -42,11 +43,12 @@
                             "strain_type":        { "label": "Strain",       "format": "text"   },
                             "thc_level":          { "label": "THC",          "format": "text"   },
                             "cbd_level":          { "label": "CBD",          "format": "text"   },
+                            "potency_unit":       { "label": "Unit",         "format": "text"   },
                             "variant_size":       { "label": "Size",         "format": "text"   },
                             "display_price":      { "label": "Price",        "format": "text"   },
                             "numeric_price":      { "label": "Price ($)",    "format": "number" },
                             "special_offer_name": { "label": "Special",      "format": "text"   },
-                            "in_stock":           { "label": "In Stock",     "format": "text"   }
+                            "in_stock":           { "label": "In Stock",     "format": "boolean" }
                         }
                     }
                 },
@@ -59,6 +61,7 @@
                             "product_name",
                             "brand",
                             "thc_level",
+                            "potency_unit",
                             "variant_size",
                             "display_price",
                             "numeric_price"
@@ -76,6 +79,7 @@
                             "product_name":    { "label": "Product",   "format": "text"   },
                             "brand":           { "label": "Brand",     "format": "text"   },
                             "thc_level":       { "label": "THC",       "format": "text"   },
+                            "potency_unit":    { "label": "Unit",      "format": "text"   },
                             "variant_size":    { "label": "Size",      "format": "text"   },
                             "display_price":   { "label": "Price",     "format": "text"   },
                             "numeric_price":   { "label": "Price ($)", "format": "number" }
