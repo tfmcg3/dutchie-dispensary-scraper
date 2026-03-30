@@ -65,6 +65,20 @@ logger = logging.getLogger("dutchie-scraper")
 # ══════════════════════════════════════════════════════════════════════════════
 
 SCHEMA_VERSION = "1.0"
+OFFERS_SCHEMA_VERSION = "1.0"
+
+# Category hint keywords for offer card classification
+CATEGORY_HINT_MAP = [
+    ("flower",      ["flower", "bud", "oz", "ounce", "gram", "eighth", "quarter", "half", "1/8", "1/4", "1/2", "14g", "7g", "3.5g"]),
+    ("pre-roll",    ["pre-roll", "preroll", "pre roll", "joint", "infused pre", "blunt"]),
+    ("vape",        ["vape", "cart", "cartridge", "disposable", "distillate", "live resin cart", "rosin cart"]),
+    ("edible",      ["edible", "gummy", "gummies", "chocolate", "brownie", "cookie", "candy", "drink", "beverage", "soda", "lemonade", "mg"]),
+    ("beverage",    ["drink", "beverage", "soda", "lemonade", "sparkling", "shot", "elixir"]),
+    ("concentrate", ["concentrate", "wax", "shatter", "rosin", "resin", "badder", "budder", "crumble", "hash", "dab", "extract", "live"]),
+    ("tincture",    ["tincture", "drops", "sublingual"]),
+    ("topical",     ["topical", "cream", "lotion", "balm", "patch", "salve"]),
+    ("accessory",   ["accessory", "accessories", "pipe", "grinder", "paper", "rolling"]),
+]
 
 # Dutchie GraphQL endpoints
 DISPENSARY_ENDPOINT = "https://dutchie.com/graphql"
@@ -827,6 +841,214 @@ def normalize_product(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# OFFERS / SPECIALS FETCHING
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Full ConsumerDispensarySpecials GraphQL query (POST to /graphql)
+SPECIALS_QUERY = """
+query ConsumerDispensarySpecials($dispensaryId: ID!, $pricingType: String) {
+  consumerDispensarySpecials(dispensaryId: $dispensaryId, pricingType: $pricingType) {
+    specials {
+      id
+      name
+      description
+      photo
+      photoDescription
+      menuType
+      specialType
+      startDate
+      endDate
+      isActive
+      redemptionLimit
+      terms
+      menuItems {
+        id
+        name
+        category
+        subcategory
+        brand
+        Options
+        Prices
+        recPrices
+        image
+        Image
+        THCContent { range value unit }
+        CBDContent  { range value unit }
+      }
+    }
+  }
+}
+"""
+
+
+def _infer_category_hint(text: str) -> str | None:
+    """
+    Infer a category hint from offer title/description text.
+    Returns the first matching category string or None.
+    """
+    if not text:
+        return None
+    lower = text.lower()
+    for category, keywords in CATEGORY_HINT_MAP:
+        if any(kw in lower for kw in keywords):
+            return category
+    return None
+
+
+def _is_mix_and_match(text: str) -> bool:
+    """Return True if the offer text mentions mix & match."""
+    if not text:
+        return False
+    lower = text.lower()
+    return "mix" in lower and ("match" in lower or "&" in lower)
+
+
+def fetch_offers(
+    client:         DutchieClient,
+    dispensary_id:  str,
+    dispensary_slug: str,
+    dispensary_name: str,
+    source_url:     str,
+    pricing_type:   str = "recreational",
+) -> list[dict]:
+    """
+    Fetch Offers tab cards via ConsumerDispensarySpecials GraphQL POST.
+    Returns a list of normalized offer-card records.
+    These are completely separate from discounted SKU rows in the product menu.
+    """
+    headers = {
+        **BASE_HEADERS,
+        "x-apollo-operation-name": "ConsumerDispensarySpecials",
+        "Referer": f"https://dutchie.com/dispensary/{dispensary_slug}/offers",
+    }
+    scraped_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # POST the full query (persisted query hash not available for specials)
+    try:
+        resp = client.session.post(
+            DISPENSARY_ENDPOINT,
+            json={
+                "operationName": "ConsumerDispensarySpecials",
+                "variables": {
+                    "dispensaryId": dispensary_id,
+                    "pricingType":  pricing_type,
+                },
+                "query": SPECIALS_QUERY,
+            },
+            headers=headers,
+            impersonate="chrome",
+            timeout=30,
+        )
+    except Exception as e:
+        logger.warning(f"[{dispensary_slug}] fetch_offers POST failed: {e}")
+        return []
+
+    if resp.status_code != 200:
+        logger.warning(f"[{dispensary_slug}] fetch_offers HTTP {resp.status_code}")
+        return []
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        logger.warning(f"[{dispensary_slug}] fetch_offers JSON parse error: {e}")
+        return []
+
+    if "errors" in data:
+        errs = data["errors"]
+        logger.warning(f"[{dispensary_slug}] fetch_offers GraphQL errors: {errs[0].get('message','?')}")
+        return []
+
+    specials = (
+        data.get("data", {})
+            .get("consumerDispensarySpecials", {})
+            .get("specials", []) or []
+    )
+    logger.info(f"[{dispensary_slug}] fetch_offers → {len(specials)} offer cards")
+
+    offer_records: list[dict] = []
+    for position, special in enumerate(specials, start=1):
+        if not isinstance(special, dict):
+            continue
+
+        # Skip inactive specials
+        if special.get("isActive") is False:
+            continue
+
+        offer_id       = _safe_str(special.get("id"))
+        offer_title    = _safe_str(special.get("name"))
+        offer_subtitle = None   # Dutchie API doesn't return a separate subtitle field
+        offer_body     = _safe_str(special.get("description"))
+        offer_terms    = _safe_str(special.get("terms"))
+        offer_image    = _safe_str(special.get("photo"))
+        offer_img_alt  = _safe_str(special.get("photoDescription"))
+        special_type   = _safe_str(special.get("specialType"))
+        menu_type      = _safe_str(special.get("menuType"))
+        start_date     = _safe_str(special.get("startDate"))
+        end_date       = _safe_str(special.get("endDate"))
+
+        # Build combined text for category inference
+        combined_text = " ".join(filter(None, [offer_title, offer_body, offer_terms]))
+
+        # Extract menu items (linked SKUs)
+        menu_items = special.get("menuItems") or []
+        linked_skus: list[dict] = []
+        for mi in menu_items:
+            if not isinstance(mi, dict):
+                continue
+            linked_skus.append({
+                "id":          _safe_str(mi.get("id")),
+                "name":        _safe_str(mi.get("name")),
+                "category":    _safe_str(mi.get("category")),
+                "subcategory": _safe_str(mi.get("subcategory")),
+                "brand":       _safe_str(mi.get("brand")),
+            })
+
+        # Infer price text from title (e.g. "3 for $20", "2 for $35")
+        price_text = None
+        if offer_title:
+            price_match = re.search(
+                r'(\d+\s*(?:for|/|@)\s*\$\d+(?:\.\d+)?|\$\d+(?:\.\d+)?(?:\s*each)?)',
+                offer_title, re.IGNORECASE
+            )
+            if price_match:
+                price_text = price_match.group(0).strip()
+
+        # Build offer target URL (links to the store's offers page)
+        offer_target_url = f"https://dutchie.com/dispensary/{dispensary_slug}/offers"
+
+        offer_records.append({
+            "offers_schema_version":    OFFERS_SCHEMA_VERSION,
+            "store_slug":               dispensary_slug,
+            "store_name":               dispensary_name,
+            "source_url":               source_url,
+            "scrape_timestamp_utc":     scraped_at,
+            "offer_position":           position,
+            "offer_id":                 offer_id,
+            "offer_title":              offer_title,
+            "offer_subtitle":           offer_subtitle,
+            "offer_body_text":          offer_body,
+            "offer_cta_text":           "SHOP",  # Dutchie always renders a SHOP button
+            "offer_target_url":         offer_target_url,
+            "offer_image_url":          offer_image,
+            "offer_image_alt":          offer_img_alt,
+            "offer_badges":             [],  # Populated from DOM scrape if available
+            "offer_price_text_raw":      price_text,
+            "offer_terms_text_raw":      offer_terms,
+            "is_mix_and_match":          _is_mix_and_match(combined_text),
+            "category_hint":             _infer_category_hint(combined_text),
+            "special_type":              special_type,
+            "menu_type":                 menu_type,
+            "start_date":                start_date,
+            "end_date":                  end_date,
+            "linked_sku_count":          len(linked_skus),
+            "linked_skus":               linked_skus,
+            "raw_card_html":             None,  # Not available via GraphQL; set via DOM scrape
+        })
+
+    return offer_records
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # MAIN ACTOR ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -946,7 +1168,7 @@ async def _process(actor_input: dict):
             logger.info(f"[{dispensary_cname}] {len(raw_products)} products → {len(store_results)} SKU records")
 
             if APIFY_AVAILABLE:
-                # Push data to dataset
+                # Push product SKUs to the default dataset
                 await Actor.push_data(store_results)
                 # Charge one PPR event per result
                 await Actor.charge(event_name=PPR_EVENT_NAME, count=len(store_results))
@@ -965,6 +1187,40 @@ async def _process(actor_input: dict):
                     logger.info(f"  … and {len(store_results) - 3} more SKU records")
 
             total_results += len(store_results)
+
+            # ── Fetch Offers tab cards (separate dataset) ─────────────────────
+            logger.info(f"[{dispensary_cname}] Fetching Offers tab cards …")
+            try:
+                offer_records = fetch_offers(
+                    client          = client,
+                    dispensary_id   = dispensary_id,
+                    dispensary_slug = dispensary_cname,
+                    dispensary_name = dispensary_name,
+                    source_url      = url,
+                    pricing_type    = "recreational",
+                )
+            except Exception as e:
+                logger.warning(f"[{dispensary_cname}] fetch_offers failed: {e}")
+                offer_records = []
+
+            if offer_records:
+                logger.info(f"[{dispensary_cname}] {len(offer_records)} offer cards found")
+                if APIFY_AVAILABLE:
+                    # Push offers to a SEPARATE named dataset so they never mix with SKUs
+                    offers_dataset = await Actor.open_dataset(name="offers")
+                    await offers_dataset.push_data(offer_records)
+                    logger.info(f"[{dispensary_cname}] Pushed {len(offer_records)} offer cards to 'offers' dataset")
+                else:
+                    logger.info(f"[{dispensary_cname}] LOCAL MODE — offer cards sample:")
+                    for o in offer_records[:3]:
+                        logger.info(
+                            f"  [{o['offer_position']:2}] {(o['offer_title'] or '—')[:60]:60} | "
+                            f"mix_match={o['is_mix_and_match']} | cat={o['category_hint'] or '—'}"
+                        )
+                    if len(offer_records) > 3:
+                        logger.info(f"  … and {len(offer_records) - 3} more offer cards")
+            else:
+                logger.info(f"[{dispensary_cname}] No active offer cards found")
 
             # Polite delay between stores in bulk mode
             if len(urls) > 1 and idx < len(urls):
