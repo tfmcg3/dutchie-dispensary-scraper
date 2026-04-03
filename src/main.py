@@ -841,45 +841,19 @@ def normalize_product(
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# OFFERS / SPECIALS FETCHING
+# OFFERS / SPECIALS FETCHING  (Playwright DOM scraper)
 # ══════════════════════════════════════════════════════════════════════════════
-
-# Full ConsumerDispensarySpecials GraphQL query (POST to /graphql)
-SPECIALS_QUERY = """
-query ConsumerDispensarySpecials($dispensaryId: ID!, $pricingType: String) {
-  consumerDispensarySpecials(dispensaryId: $dispensaryId, pricingType: $pricingType) {
-    specials {
-      id
-      name
-      description
-      photo
-      photoDescription
-      menuType
-      specialType
-      startDate
-      endDate
-      isActive
-      redemptionLimit
-      terms
-      menuItems {
-        id
-        name
-        category
-        subcategory
-        brand
-        Options
-        Prices
-        recPrices
-        image
-        Image
-        THCContent { range value unit }
-        CBDContent  { range value unit }
-      }
-    }
-  }
-}
-"""
-
+#
+# Dutchie's /specials page is fully client-side rendered (Next.js, empty
+# pageProps).  The offer cards are loaded by the browser via an internal
+# GraphQL call whose persisted-query hash is private.  Attempting to POST
+# directly to /graphql is blocked by Cloudflare (HTTP 400).
+#
+# Solution: use Playwright to open the /specials page in a real browser,
+# wait for the BogoCardContainer elements to appear, then extract the card
+# data directly from the DOM.  This is completely independent of the
+# product-scraping pipeline (curl_cffi / GET requests) and does not affect it.
+# ──────────────────────────────────────────────────────────────────────────────
 
 def _infer_category_hint(text: str) -> str | None:
     """
@@ -903,105 +877,125 @@ def _is_mix_and_match(text: str) -> bool:
     return "mix" in lower and ("match" in lower or "&" in lower)
 
 
+# JavaScript injected into the page to extract all offer cards from the DOM.
+# Dutchie renders offer cards with the CSS class pattern 'BogoCardContainer'.
+# Each card has a title element ('Title'), a shop button ('ShopButton'), and
+# a background-image CSS property containing the card image URL.
+_EXTRACT_OFFERS_JS = """
+() => {
+    const cards = document.querySelectorAll('[class*="BogoCardContainer"]');
+    const results = [];
+    cards.forEach((card, idx) => {
+        const titleEl  = card.querySelector('[class*="Title"]');
+        const shopBtn  = card.querySelector('[class*="ShopButton"]');
+        const bgStyle  = window.getComputedStyle(card).backgroundImage;
+        let imageUrl   = null;
+        const urlMatch = bgStyle.match(/url\\(["']?([^"')]+)["']?\\)/);
+        if (urlMatch) imageUrl = urlMatch[1];
+        results.push({
+            position:  idx + 1,
+            title:     titleEl ? titleEl.textContent.trim() : null,
+            cta:       shopBtn ? shopBtn.textContent.trim() : null,
+            image_url: imageUrl,
+        });
+    });
+    return results;
+}
+"""
+
+
 def fetch_offers(
-    client:         DutchieClient,
-    dispensary_id:  str,
+    client:          DutchieClient,   # kept for API compatibility; not used here
+    dispensary_id:   str,             # kept for API compatibility; not used here
     dispensary_slug: str,
     dispensary_name: str,
-    source_url:     str,
-    pricing_type:   str = "recreational",
+    source_url:      str,
+    pricing_type:    str = "recreational",
 ) -> list[dict]:
     """
-    Fetch Offers tab cards via ConsumerDispensarySpecials GraphQL POST.
-    Returns a list of normalized offer-card records.
-    These are completely separate from discounted SKU rows in the product menu.
+    Scrape offer cards from the Dutchie /specials page using Playwright.
+
+    Navigates to https://dutchie.com/dispensary/{slug}/specials, waits for
+    the BogoCardContainer elements to render, then extracts card data via
+    injected JavaScript.  Returns a list of normalized offer-card records.
+
+    These records are completely separate from discounted SKU rows in the
+    product menu and are pushed to the named 'offers' Apify dataset.
     """
-    headers = {
-        **BASE_HEADERS,
-        "x-apollo-operation-name": "ConsumerDispensarySpecials",
-        "Referer": f"https://dutchie.com/dispensary/{dispensary_slug}/offers",
-    }
-    scraped_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # POST the full query (persisted query hash not available for specials)
     try:
-        resp = client.session.post(
-            DISPENSARY_ENDPOINT,
-            json={
-                "operationName": "ConsumerDispensarySpecials",
-                "variables": {
-                    "dispensaryId": dispensary_id,
-                    "pricingType":  pricing_type,
-                },
-                "query": SPECIALS_QUERY,
-            },
-            headers=headers,
-            impersonate="chrome",
-            timeout=30,
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    except ImportError:
+        logger.warning(
+            f"[{dispensary_slug}] Playwright not installed — skipping offers scrape. "
+            "Add 'playwright>=1.40.0' to requirements.txt and re-build the actor."
         )
-    except Exception as e:
-        logger.warning(f"[{dispensary_slug}] fetch_offers POST failed: {e}")
         return []
 
-    if resp.status_code != 200:
-        logger.warning(f"[{dispensary_slug}] fetch_offers HTTP {resp.status_code}")
-        return []
+    specials_url = f"https://dutchie.com/dispensary/{dispensary_slug}/specials"
+    scraped_at   = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    logger.info(f"[{dispensary_slug}] fetch_offers → navigating to {specials_url}")
+
+    raw_cards: list[dict] = []
 
     try:
-        data = resp.json()
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                ],
+            )
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+                locale="en-US",
+            )
+            page = context.new_page()
+
+            # Block unnecessary resources to speed up load
+            page.route(
+                "**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}",
+                lambda route: route.abort(),
+            )
+
+            page.goto(specials_url, wait_until="domcontentloaded", timeout=45_000)
+
+            # Wait for at least one offer card to appear (up to 20 s)
+            try:
+                page.wait_for_selector('[class*="BogoCardContainer"]', timeout=20_000)
+            except PWTimeout:
+                logger.info(
+                    f"[{dispensary_slug}] No BogoCardContainer found within 20 s — "
+                    "store may have no active specials."
+                )
+                browser.close()
+                return []
+
+            # Small extra wait to let all cards finish rendering
+            page.wait_for_timeout(1_500)
+
+            raw_cards = page.evaluate(_EXTRACT_OFFERS_JS)
+            browser.close()
+
     except Exception as e:
-        logger.warning(f"[{dispensary_slug}] fetch_offers JSON parse error: {e}")
+        logger.warning(f"[{dispensary_slug}] fetch_offers Playwright error: {e}")
         return []
 
-    if "errors" in data:
-        errs = data["errors"]
-        logger.warning(f"[{dispensary_slug}] fetch_offers GraphQL errors: {errs[0].get('message','?')}")
-        return []
-
-    specials = (
-        data.get("data", {})
-            .get("consumerDispensarySpecials", {})
-            .get("specials", []) or []
-    )
-    logger.info(f"[{dispensary_slug}] fetch_offers → {len(specials)} offer cards")
+    logger.info(f"[{dispensary_slug}] fetch_offers → {len(raw_cards)} offer cards found")
 
     offer_records: list[dict] = []
-    for position, special in enumerate(specials, start=1):
-        if not isinstance(special, dict):
-            continue
-
-        # Skip inactive specials
-        if special.get("isActive") is False:
-            continue
-
-        offer_id       = _safe_str(special.get("id"))
-        offer_title    = _safe_str(special.get("name"))
-        offer_subtitle = None   # Dutchie API doesn't return a separate subtitle field
-        offer_body     = _safe_str(special.get("description"))
-        offer_terms    = _safe_str(special.get("terms"))
-        offer_image    = _safe_str(special.get("photo"))
-        offer_img_alt  = _safe_str(special.get("photoDescription"))
-        special_type   = _safe_str(special.get("specialType"))
-        menu_type      = _safe_str(special.get("menuType"))
-        start_date     = _safe_str(special.get("startDate"))
-        end_date       = _safe_str(special.get("endDate"))
-
-        # Build combined text for category inference
-        combined_text = " ".join(filter(None, [offer_title, offer_body, offer_terms]))
-
-        # Extract menu items (linked SKUs)
-        menu_items = special.get("menuItems") or []
-        linked_skus: list[dict] = []
-        for mi in menu_items:
-            if not isinstance(mi, dict):
-                continue
-            linked_skus.append({
-                "id":          _safe_str(mi.get("id")),
-                "name":        _safe_str(mi.get("name")),
-                "category":    _safe_str(mi.get("category")),
-                "subcategory": _safe_str(mi.get("subcategory")),
-                "brand":       _safe_str(mi.get("brand")),
-            })
+    for card in raw_cards:
+        offer_title = _safe_str(card.get("title"))
+        position    = int(card.get("position", 0))
+        offer_image = _safe_str(card.get("image_url"))
+        cta_text    = _safe_str(card.get("cta")) or "Shop"
 
         # Infer price text from title (e.g. "3 for $20", "2 for $35")
         price_text = None
@@ -1013,36 +1007,35 @@ def fetch_offers(
             if price_match:
                 price_text = price_match.group(0).strip()
 
-        # Build offer target URL (links to the store's offers page)
-        offer_target_url = f"https://dutchie.com/dispensary/{dispensary_slug}/offers"
+        combined_text = offer_title or ""
 
         offer_records.append({
-            "offers_schema_version":    OFFERS_SCHEMA_VERSION,
-            "store_slug":               dispensary_slug,
-            "store_name":               dispensary_name,
-            "source_url":               source_url,
-            "scrape_timestamp_utc":     scraped_at,
-            "offer_position":           position,
-            "offer_id":                 offer_id,
-            "offer_title":              offer_title,
-            "offer_subtitle":           offer_subtitle,
-            "offer_body_text":          offer_body,
-            "offer_cta_text":           "SHOP",  # Dutchie always renders a SHOP button
-            "offer_target_url":         offer_target_url,
-            "offer_image_url":          offer_image,
-            "offer_image_alt":          offer_img_alt,
-            "offer_badges":             [],  # Populated from DOM scrape if available
-            "offer_price_text_raw":      price_text,
-            "offer_terms_text_raw":      offer_terms,
-            "is_mix_and_match":          _is_mix_and_match(combined_text),
-            "category_hint":             _infer_category_hint(combined_text),
-            "special_type":              special_type,
-            "menu_type":                 menu_type,
-            "start_date":                start_date,
-            "end_date":                  end_date,
-            "linked_sku_count":          len(linked_skus),
-            "linked_skus":               linked_skus,
-            "raw_card_html":             None,  # Not available via GraphQL; set via DOM scrape
+            "offers_schema_version":  OFFERS_SCHEMA_VERSION,
+            "store_slug":             dispensary_slug,
+            "store_name":             dispensary_name,
+            "source_url":             source_url,
+            "scrape_timestamp_utc":   scraped_at,
+            "offer_position":         position,
+            "offer_id":               None,          # Not available via DOM
+            "offer_title":            offer_title,
+            "offer_subtitle":         None,
+            "offer_body_text":        None,
+            "offer_cta_text":         cta_text,
+            "offer_target_url":       specials_url,
+            "offer_image_url":        offer_image,
+            "offer_image_alt":        None,
+            "offer_badges":           [],
+            "offer_price_text_raw":   price_text,
+            "offer_terms_text_raw":   None,
+            "is_mix_and_match":       _is_mix_and_match(combined_text),
+            "category_hint":          _infer_category_hint(combined_text),
+            "special_type":           None,
+            "menu_type":              None,
+            "start_date":             None,
+            "end_date":               None,
+            "linked_sku_count":       0,
+            "linked_skus":            [],
+            "raw_card_html":          None,
         })
 
     return offer_records
