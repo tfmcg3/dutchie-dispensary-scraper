@@ -1070,10 +1070,11 @@ async def _process(actor_input: dict):
     """Process actor input: scrape each dispensary and push results."""
 
     # ── Parse input ───────────────────────────────────────────────────────────
-    raw_urls  = actor_input.get("dispensaryUrls", [])
-    max_items = int(actor_input.get("maxItems", 0))
-    use_proxy = actor_input.get("useProxy", False)
-    proxy_grp = actor_input.get("proxyGroup", "RESIDENTIAL")
+    raw_urls   = actor_input.get("dispensaryUrls", [])
+    max_items  = int(actor_input.get("maxItems", 0))
+    use_proxy  = actor_input.get("useProxy", False)
+    proxy_grp  = actor_input.get("proxyGroup", "RESIDENTIAL")
+    offers_only = bool(actor_input.get("offersOnly", False))  # Skip product scraping, only fetch Offers tab
 
     # Normalise URL list (accept strings or {url: ...} dicts)
     urls: list[str] = []
@@ -1132,57 +1133,61 @@ async def _process(actor_input: dict):
             dispensary_cname = disp["cName"]
             logger.info(f"[{slug}] Resolved → '{dispensary_name}' (cName={dispensary_cname})")
 
-            # ── Fetch products ────────────────────────────────────────────────
-            try:
-                raw_products = fetch_all_products(
-                    client        = client,
-                    dispensary_id = dispensary_id,
-                    cname         = dispensary_cname,
-                    max_items     = max_items,
-                )
-            except Exception as e:
-                logger.error(f"[{dispensary_cname}] Scraping failed: {e}")
-                continue
-
-            if not raw_products:
-                logger.warning(f"[{dispensary_cname}] No products returned.")
-                continue
-
-            # ── Normalize & push ──────────────────────────────────────────────
-            scraped_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            store_results: list[dict] = []
-
-            for raw in raw_products:
-                records = normalize_product(
-                    raw             = raw,
-                    dispensary_name = dispensary_name,
-                    dispensary_url  = url,
-                    scraped_at      = scraped_at,
-                )
-                store_results.extend(records)
-
-            logger.info(f"[{dispensary_cname}] {len(raw_products)} products → {len(store_results)} SKU records")
-
-            if APIFY_AVAILABLE:
-                # Push product SKUs to the default dataset
-                await Actor.push_data(store_results)
-                # Charge one PPR event per result
-                await Actor.charge(event_name=PPR_EVENT_NAME, count=len(store_results))
-                logger.info(f"[{dispensary_cname}] Pushed {len(store_results)} results & charged {len(store_results)} PPR events")
+            if offers_only:
+                logger.info(f"[{dispensary_cname}] offersOnly=True — skipping product scrape")
+                total_results += 0
             else:
-                # Local mode: print a sample
-                logger.info(f"[{dispensary_cname}] LOCAL MODE — sample output:")
-                for r in store_results[:3]:
-                    logger.info(
-                        f"  [{r['category']:12}] {r['product_name'][:40]:40} | "
-                        f"{r['brand'] or '—':20} | "
-                        f"THC: {r['thc_level'] or '—':8} | "
-                        f"{r['display_price'] or '—'}"
+                # ── Fetch products ────────────────────────────────────────────────
+                try:
+                    raw_products = fetch_all_products(
+                        client        = client,
+                        dispensary_id = dispensary_id,
+                        cname         = dispensary_cname,
+                        max_items     = max_items,
                     )
-                if len(store_results) > 3:
-                    logger.info(f"  … and {len(store_results) - 3} more SKU records")
+                except Exception as e:
+                    logger.error(f"[{dispensary_cname}] Scraping failed: {e}")
+                    continue
 
-            total_results += len(store_results)
+                if not raw_products:
+                    logger.warning(f"[{dispensary_cname}] No products returned.")
+                    continue
+
+                # ── Normalize & push ──────────────────────────────────────────────
+                scraped_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                store_results: list[dict] = []
+
+                for raw in raw_products:
+                    records = normalize_product(
+                        raw             = raw,
+                        dispensary_name = dispensary_name,
+                        dispensary_url  = url,
+                        scraped_at      = scraped_at,
+                    )
+                    store_results.extend(records)
+
+                logger.info(f"[{dispensary_cname}] {len(raw_products)} products → {len(store_results)} SKU records")
+
+                if APIFY_AVAILABLE:
+                    # Push product SKUs to the default dataset
+                    await Actor.push_data(store_results)
+                    # Charge one PPR event per result
+                    await Actor.charge(event_name=PPR_EVENT_NAME, count=len(store_results))
+                    logger.info(f"[{dispensary_cname}] Pushed {len(store_results)} results & charged {len(store_results)} PPR events")
+                else:
+                    # Local mode: print a sample
+                    logger.info(f"[{dispensary_cname}] LOCAL MODE — sample output:")
+                    for r in store_results[:3]:
+                        logger.info(
+                            f"  [{r['category']:12}] {r['product_name'][:40]:40} | "
+                            f"{r['brand'] or '—':20} | "
+                            f"THC: {r['thc_level'] or '—':8} | "
+                            f"{r['display_price'] or '—'}"
+                        )
+                    if len(store_results) > 3:
+                        logger.info(f"  … and {len(store_results) - 3} more SKU records")
+
+                total_results += len(store_results)
 
             # ── Fetch Offers tab cards (separate dataset) ─────────────────
             logger.info(f"[{dispensary_cname}] Fetching Offers tab cards …")
