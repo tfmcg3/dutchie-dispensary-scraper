@@ -904,7 +904,7 @@ _EXTRACT_OFFERS_JS = """
 """
 
 
-def fetch_offers(
+async def fetch_offers(
     client:          DutchieClient,   # kept for API compatibility; not used here
     dispensary_id:   str,             # kept for API compatibility; not used here
     dispensary_slug: str,
@@ -913,7 +913,7 @@ def fetch_offers(
     pricing_type:    str = "recreational",
 ) -> list[dict]:
     """
-    Scrape offer cards from the Dutchie /specials page using Playwright.
+    Scrape offer cards from the Dutchie /specials page using Playwright (async).
 
     Navigates to https://dutchie.com/dispensary/{slug}/specials, waits for
     the BogoCardContainer elements to render, then extracts card data via
@@ -921,9 +921,12 @@ def fetch_offers(
 
     These records are completely separate from discounted SKU rows in the
     product menu and are pushed to the named 'offers' Apify dataset.
+
+    Uses async_playwright because the actor runs inside an asyncio event loop
+    (Apify SDK is async-first).  sync_playwright cannot be used here.
     """
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+        from playwright.async_api import async_playwright, TimeoutError as PWTimeout
     except ImportError:
         logger.warning(
             f"[{dispensary_slug}] Playwright not installed — skipping offers scrape. "
@@ -938,8 +941,8 @@ def fetch_offers(
     raw_cards: list[dict] = []
 
     try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
                 headless=True,
                 args=[
                     "--no-sandbox",
@@ -948,7 +951,7 @@ def fetch_offers(
                     "--disable-gpu",
                 ],
             )
-            context = browser.new_context(
+            context = await browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -957,32 +960,32 @@ def fetch_offers(
                 viewport={"width": 1280, "height": 800},
                 locale="en-US",
             )
-            page = context.new_page()
+            page = await context.new_page()
 
             # Block unnecessary resources to speed up load
-            page.route(
+            await page.route(
                 "**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,otf}",
                 lambda route: route.abort(),
             )
 
-            page.goto(specials_url, wait_until="domcontentloaded", timeout=45_000)
+            await page.goto(specials_url, wait_until="domcontentloaded", timeout=45_000)
 
             # Wait for at least one offer card to appear (up to 20 s)
             try:
-                page.wait_for_selector('[class*="BogoCardContainer"]', timeout=20_000)
+                await page.wait_for_selector('[class*="BogoCardContainer"]', timeout=20_000)
             except PWTimeout:
                 logger.info(
                     f"[{dispensary_slug}] No BogoCardContainer found within 20 s — "
                     "store may have no active specials."
                 )
-                browser.close()
+                await browser.close()
                 return []
 
             # Small extra wait to let all cards finish rendering
-            page.wait_for_timeout(1_500)
+            await page.wait_for_timeout(1_500)
 
-            raw_cards = page.evaluate(_EXTRACT_OFFERS_JS)
-            browser.close()
+            raw_cards = await page.evaluate(_EXTRACT_OFFERS_JS)
+            await browser.close()
 
     except Exception as e:
         logger.warning(f"[{dispensary_slug}] fetch_offers Playwright error: {e}")
@@ -1181,10 +1184,10 @@ async def _process(actor_input: dict):
 
             total_results += len(store_results)
 
-            # ── Fetch Offers tab cards (separate dataset) ─────────────────────
+            # ── Fetch Offers tab cards (separate dataset) ─────────────────
             logger.info(f"[{dispensary_cname}] Fetching Offers tab cards …")
             try:
-                offer_records = fetch_offers(
+                offer_records = await fetch_offers(
                     client          = client,
                     dispensary_id   = dispensary_id,
                     dispensary_slug = dispensary_cname,
