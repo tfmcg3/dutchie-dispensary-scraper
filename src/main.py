@@ -450,6 +450,13 @@ def fetch_all_products(
     """
     Fetch all products via the FilteredProducts persisted query.
     Uses page-based pagination (page=0, perPage=50).
+
+    Deduplication: Some dispensaries (e.g. Botera) pin or feature products
+    across multiple category pages in their Dutchie menu. Dutchie's
+    FilteredProducts API then returns these products on every page they
+    appear on, causing the same product_id to appear multiple times in the
+    raw results. We track seen product IDs and skip any product whose _id
+    has already been collected. Products with no _id are always included.
     """
     headers = {
         **BASE_HEADERS,
@@ -457,6 +464,7 @@ def fetch_all_products(
         "Referer": f"https://dutchie.com/dispensary/{cname}",
     }
     all_products: list[dict] = []
+    seen_ids: set[str] = set()  # track product _ids to prevent cross-page duplicates
 
     for page_num in range(MAX_PAGES):
         variables = {
@@ -506,7 +514,22 @@ def fetch_all_products(
         if not products:
             break
 
-        all_products.extend(products)
+        # Deduplicate by product _id — skips pinned/featured products that
+        # Dutchie surfaces on multiple category pages for the same dispensary.
+        new_count = 0
+        skipped_count = 0
+        for p in products:
+            pid = p.get("_id") or p.get("id", "")
+            if pid and pid in seen_ids:
+                skipped_count += 1
+                continue
+            if pid:
+                seen_ids.add(pid)
+            all_products.append(p)
+            new_count += 1
+
+        if skipped_count:
+            logger.info(f"[{cname}] Page {page_num + 1}: {new_count} new, {skipped_count} duplicate(s) skipped")
 
         if max_items > 0 and len(all_products) >= max_items:
             all_products = all_products[:max_items]
@@ -517,7 +540,7 @@ def fetch_all_products(
 
         time.sleep(REQUEST_DELAY)
 
-    logger.info(f"[{cname}] Total raw products: {len(all_products)}")
+    logger.info(f"[{cname}] Total raw products: {len(all_products)} (seen_ids tracked: {len(seen_ids)})")
     return all_products
 
 
